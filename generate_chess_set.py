@@ -308,41 +308,6 @@ def bishop():
 
     return bishop
 
-
-def bishop2():
-    base_height = 5
-    body_height = 40
-    head_radius = 6
-
-    # Create base
-    base = cylinder(radius=12, height=base_height)
-
-    # Create body
-    body = cylinder(radius=8, height=body_height)
-    body.apply_translation([0, 0, base_height + 10])
-
-    # Create head
-    head = Sphere(radius=head_radius).to_mesh()
-    #head.apply_translation([0, 0, base_height + body_height + 5])
-    head.apply_translation([0, 0, base_height + body_height - (head_radius*2 )])
-
-    # Create the slot in the head
-    slot = box(extents=[2, 12, 20])
-    slot.apply_translation([0, 0, base_height + body_height + 5])
-
-    # Subtract slot from head
-    head = head.difference(slot)
-
-    # Combine parts
-    bishop = trimesh.util.concatenate([base, body, head])
-
-    # Shift bishop so that min z is 0
-    min_z = bishop.bounds[0][2]
-    if min_z != 0:
-        bishop.apply_translation([0, 0, -min_z])
-
-    return bishop
-
 def queen():
     import trimesh
     import numpy as np
