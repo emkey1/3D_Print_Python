@@ -44,6 +44,7 @@ def pawn():
 
     return pawn
 
+# A more traditional looking rook, not the default
 def rook():
     import trimesh
     import numpy as np
