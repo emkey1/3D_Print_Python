@@ -1,4 +1,6 @@
 # There is probably a better way, but here is my way, at least for now
+#
+# Generates a four sided pyramid with stair step layers.
 
 import numpy as np
 import trimesh
