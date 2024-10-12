@@ -45,7 +45,7 @@ def pawn():
     return pawn
 
 # A more traditional looking rook, not the default
-def rook():
+def rook_alt():
     import trimesh
     import numpy as np
     from trimesh.creation import cylinder, cone
@@ -180,7 +180,7 @@ def rook():
 
     return rook
 
-def rook_alt():
+def rook():
     base_height = 5
     body_height = 33
     top_height = 6
@@ -440,11 +440,11 @@ def main():
 
     # Define default counts if no arguments are provided
     default_counts = {
-        'pawn': 1,
-        'rook': 0,
-        'rook_alt': 1,
-        'knight': 1,
-        'bishop': 1,
+        'pawn': 8,
+        'rook': 2,
+        'rook_alt': 0,
+        'knight': 2,
+        'bishop': 2,
         'queen': 1,
         'king': 1
     }
