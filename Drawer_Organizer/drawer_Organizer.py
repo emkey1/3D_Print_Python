@@ -9,7 +9,7 @@ import argparse
 import math
 import sys
 
-def create_wall(start, end, thickness, height):
+def create_wall(start, end, thickness, height, floor_thickness, bite=False):
     start = np.array(start)
     end = np.array(end)
     wall_vector = end - start
@@ -19,30 +19,49 @@ def create_wall(start, end, thickness, height):
         print(f"Warning: Wall with zero length between {start} and {end}. Skipping.")
         return None
 
-    # Direction vector
     direction = wall_vector / length
-
-    # Center position of the wall
-    center = (start + end) / 2
-    center[2] += height / 2  # Elevate to the middle of the height
-
-    # Rotation angle around Z-axis
     angle = np.arctan2(direction[1], direction[0])
 
-    # Create box centered at origin
-    wall = trimesh.creation.box(extents=[length, thickness, height])
+    # Create the wall as a box centered at the origin
+    wall = trimesh.creation.box(extents=[length, thickness, height + floor_thickness])
+    wall.apply_translation([length / 2, 0, (height - floor_thickness) / 2])
+    #wall.apply_translation([length / 2, 0, (height - floor_thickness) / 2 + floor_thickness])
 
-    # Build transformation matrix
-    # Rotation around Z-axis
+    # Apply rotation and translation to position the wall
     T_rotate = trimesh.transformations.rotation_matrix(angle, [0, 0, 1])
-
-    # Translation to center position
-    T_translate = trimesh.transformations.translation_matrix(center)
-
-    # Apply transformations: rotate first, then translate
+    T_translate = trimesh.transformations.translation_matrix(start)
     T = trimesh.transformations.concatenate_matrices(T_translate, T_rotate)
-
     wall.apply_transform(T)
+
+    if bite:
+        # Create the ellipsoid for the bite
+        bite_depth = .33 * height
+
+        length = length + .5 
+
+        # Radii for the ellipsoid
+        radius_x = length * .35  #
+        radius_y = thickness * 3.7  # Need to be sure we totally eliminate the partition wall where the ellipsoid is
+        radius_z = bite_depth  # Depth of the bite
+
+        # Create an ellipsoid centered at the origin
+        subdivisions = 3  # Adjust for smoother ellipsoid
+        ellipsoid = trimesh.creation.icosphere(subdivisions=subdivisions, radius=1)
+        ellipsoid.apply_scale([radius_x, radius_y, radius_z])
+
+        # Position the ellipsoid to overlap with the top of the wall
+        ellipsoid.apply_translation([length / 2, 0, height + 3 ])
+        #ellipsoid.apply_translation([length / 2, 0, height - floor_thickness])
+
+        # Apply the same transformation to the ellipsoid
+        ellipsoid.apply_transform(T)
+
+        # Ensure the meshes are valid volumes
+        wall.process(validate=True)
+        ellipsoid.process(validate=True)
+
+        # Perform the boolean difference without specifying the engine
+        wall = wall.difference(ellipsoid)
 
     return wall
 
@@ -66,11 +85,13 @@ def create_organizer(size, height, wall_thickness, divider_thickness, floor_thic
 
     for start_coords, end_coords in wall_positions:
         wall = create_wall(
-            start=start_coords + [floor_thickness],
-            end=end_coords + [floor_thickness],
+            start=np.array(start_coords + [floor_thickness]),
+            end=np.array(end_coords + [floor_thickness]),
             thickness=wall_thickness,
-            height=height
+            height=height,
+            floor_thickness=floor_thickness
         )
+
         if wall:
             components.append(wall)
 
@@ -133,10 +154,12 @@ def create_organizer(size, height, wall_thickness, divider_thickness, floor_thic
 
                 # Create the divider wall
                 wall = create_wall(
-                    start=start_point + [floor_thickness],
-                    end=end_point + [floor_thickness],
+                    start=np.array(start_point + [floor_thickness]),
+                    end=np.array(end_point + [floor_thickness]),
                     thickness=divider_thickness,
-                    height=height
+                    height=height,
+                    floor_thickness=floor_thickness,
+                    bite=True  # Enable the oval bite for divider walls
                 )
                 if wall:
                     components.append(wall)
@@ -151,7 +174,7 @@ def create_organizer(size, height, wall_thickness, divider_thickness, floor_thic
 def main():
     parser = argparse.ArgumentParser(description='Generate a square kitchen drawer organizer with parallel diagonal compartments and an open top.')
 
-    parser.add_argument('--compartments', type=int, default=2, help='Number of compartments to include (default: 2).')
+    parser.add_argument('--compartments', type=int, default=3, help='Number of compartments to include (default: 3).')
     parser.add_argument('--size', type=float, default=250.0, help='Size of the organizer (width and depth) in millimeters (default: 250 mm).')
     parser.add_argument('--height', type=float, default=35.0, help='Height of the organizer side walls in millimeters (default: 35 mm).')
     parser.add_argument('--divider_thickness', type=float, default=1.75, help='Thickness of the dividers in millimeters (default: 1.75 mm).')
