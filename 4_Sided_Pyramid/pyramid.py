@@ -4,33 +4,15 @@
 # below it.  The whole pyramid is built as a single closed mesh, so it's small,
 # watertight and slices cleanly.
 #
-# Requires: numpy, trimesh
+# Requires: numpy, trimesh, manifold3d
 
 import argparse
 import sys
-import trimesh
+from pathlib import Path
 
-
-def square_points(side, z):
-    h = side / 2
-    return [[-h, -h, z], [h, -h, z], [h, h, z], [-h, h, z]]
-
-
-def loft_squares(rings):
-    """Closed solid through a stack of (side, z) squares, bottom to top."""
-    vertices = []
-    for side, z in rings:
-        vertices += square_points(side, z)
-
-    top = 4 * (len(rings) - 1)
-    faces = [[0, 2, 1], [0, 3, 2],                              # bottom cap
-             [top, top + 1, top + 2], [top, top + 2, top + 3]]  # top cap
-    for r in range(len(rings) - 1):
-        lo, hi = 4 * r, 4 * (r + 1)
-        for k in range(4):
-            k1 = (k + 1) % 4
-            faces += [[lo + k, lo + k1, hi + k1], [lo + k, hi + k1, hi + k]]
-    return trimesh.Trimesh(vertices=vertices, faces=faces)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from printlib import Part, add_format_argument, output_path, save  # noqa: E402
+from printlib.shapes import loft_squares  # noqa: E402
 
 
 def create_stepped_pyramid(base_size, step_width, step_height, top_size):
@@ -59,7 +41,8 @@ def main():
     parser.add_argument('--step_width', type=float, default=1.05, help='How far each layer steps in on every side, in millimeters (default: 1.05 mm).')
     parser.add_argument('--step_height', type=float, default=1.05, help='Height of each layer in millimeters (default: 1.05 mm).')
     parser.add_argument('--top_size', type=float, default=2.1, help='Smallest allowed width for the top layer in millimeters (default: 2.1 mm).')
-    parser.add_argument('--output', type=str, default='pyramid_blocks.stl', help='Output STL filename (default: pyramid_blocks.stl).')
+    parser.add_argument('--output', type=str, default=None, help='Output filename; .stl or .3mf (default: pyramid_blocks.stl or .3mf).')
+    add_format_argument(parser)
     args = parser.parse_args()
 
     if min(args.base_size, args.step_width, args.step_height, args.top_size) <= 0:
@@ -71,10 +54,11 @@ def main():
 
     pyramid, layers = create_stepped_pyramid(args.base_size, args.step_width,
                                              args.step_height, args.top_size)
-    pyramid.export(args.output)
+    output_filename = output_path(args.output, 'pyramid_blocks', args.format)
+    save(Part('Stepped pyramid', pyramid), output_filename)
 
     extents = pyramid.extents
-    print(f"Stepped pyramid with {layers} layers saved as '{args.output}'.")
+    print(f"Stepped pyramid with {layers} layers saved as '{output_filename}'.")
     print(f"  Size: {extents[0]:.2f} x {extents[1]:.2f} x {extents[2]:.2f} mm")
 
 

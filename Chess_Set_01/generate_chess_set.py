@@ -8,115 +8,21 @@
 #
 # Requires: numpy, trimesh, manifold3d
 
-import numpy as np
-import trimesh
-import trimesh.transformations as tt
 import argparse  # Import argparse for command-line argument parsing
 import math      # Import math for grid calculations
+import sys
+from pathlib import Path
 
-BOOLEAN_ENGINE = 'manifold'
-SECTIONS = 32         # Facets around round parts
-SPHERE_DETAIL = 3     # Icosphere subdivisions
+import numpy as np
+import trimesh.transformations as tt
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from printlib import Part, add_format_argument, output_path, save  # noqa: E402
+from printlib.shapes import (block, cone, cylinder, difference, drop_to_bed,  # noqa: E402
+                             ellipsoid, frustum, prism_y, ring_of, sphere, union)
 
 BASE_RADIUS = 12
 BASE_HEIGHT = 5
-
-
-# --- Shape helpers --------------------------------------------------------
-
-def lathe(rings, sections=SECTIONS):
-    """Closed solid of revolution through a stack of (radius, z) rings, bottom to top."""
-    angles = np.linspace(0, 2 * np.pi, sections, endpoint=False)
-    circle = np.column_stack([np.cos(angles), np.sin(angles)])
-    vertices = [np.column_stack([circle * r, np.full(sections, z)]) for r, z in rings]
-    vertices = np.vstack(vertices + [[[0, 0, rings[0][1]], [0, 0, rings[-1][1]]]])
-    bottom_center, top_center = len(vertices) - 2, len(vertices) - 1
-    top = sections * (len(rings) - 1)
-
-    faces = []
-    for k in range(sections):
-        k1 = (k + 1) % sections
-        faces.append([bottom_center, k1, k])
-        faces.append([top_center, top + k, top + k1])
-        for r in range(len(rings) - 1):
-            lo, hi = sections * r, sections * (r + 1)
-            faces += [[lo + k, lo + k1, hi + k1], [lo + k, hi + k1, hi + k]]
-    return trimesh.Trimesh(vertices=vertices, faces=faces)
-
-
-def cylinder(radius, z_bottom, z_top):
-    return lathe([(radius, z_bottom), (radius, z_top)])
-
-
-def frustum(radius_bottom, radius_top, z_bottom, z_top):
-    return lathe([(radius_bottom, z_bottom), (radius_top, z_top)])
-
-
-def cone(radius, z_bottom, height):
-    """Cone with its base at z_bottom and its point at z_bottom + height."""
-    c = trimesh.creation.cone(radius=radius, height=height, sections=SECTIONS)
-    c.apply_translation([0, 0, z_bottom])
-    return c
-
-
-def ellipsoid(radii, center):
-    e = trimesh.creation.icosphere(subdivisions=SPHERE_DETAIL, radius=1)
-    e.apply_scale(radii)
-    e.apply_translation(center)
-    return e
-
-
-def sphere(radius, center):
-    return ellipsoid([radius] * 3, center)
-
-
-def block(extents, center):
-    b = trimesh.creation.box(extents=extents)
-    b.apply_translation(center)
-    return b
-
-
-def prism_y(points_xz, depth):
-    """Prism from a convex polygon in the XZ plane (counterclockwise seen from
-    -Y), extruded depth mm, centered on y = 0."""
-    n = len(points_xz)
-    front = [[x, -depth / 2, z] for x, z in points_xz]
-    back = [[x, depth / 2, z] for x, z in points_xz]
-    faces = []
-    for i in range(1, n - 1):
-        faces.append([0, i, i + 1])                 # front (-Y) face
-        faces.append([n, n + i + 1, n + i])         # back (+Y) face
-    for i in range(n):
-        i1 = (i + 1) % n
-        faces += [[i, n + i, n + i1], [i, n + i1, i1]]
-    return trimesh.Trimesh(vertices=front + back, faces=faces)
-
-
-def ring_of(mesh, count, radius, phase=0.0):
-    """Copies of mesh (built at the origin) spaced evenly around a circle."""
-    copies = []
-    for angle in np.linspace(0, 2 * np.pi, count, endpoint=False) + phase:
-        c = mesh.copy()
-        c.apply_translation([0, radius, 0])
-        c.apply_transform(tt.rotation_matrix(angle, [0, 0, 1]))
-        copies.append(c)
-    return copies
-
-
-def union(parts):
-    return trimesh.boolean.union(parts, engine=BOOLEAN_ENGINE)
-
-
-def difference(solid, cutters):
-    return trimesh.boolean.difference([solid] + list(cutters), engine=BOOLEAN_ENGINE)
-
-
-def finish(piece, scale=1.0):
-    """Scale the piece and set it on z = 0."""
-    if scale != 1.0:
-        piece.apply_scale(scale)
-    piece.apply_translation([0, 0, -piece.bounds[0][2]])
-    return piece
 
 
 def base():
@@ -134,7 +40,7 @@ def pawn():
         cylinder(7.5, BASE_HEIGHT, body_top),
         sphere(head_radius, [0, 0, body_top + 3.5]),
     ])
-    return finish(pawn, scale=4 / 5)
+    return drop_to_bed(pawn, scale=4 / 5)
 
 
 # A more traditional looking rook, not the default
@@ -165,7 +71,7 @@ def rook_alt():
                   [0, 0, top_z - notch_height + (notch_height + 1) / 2])
     notches = ring_of(notch, 6, top_outer_radius - notch_depth / 2 + 0.5)
 
-    return finish(difference(rook, [cup] + notches))
+    return drop_to_bed(difference(rook, [cup] + notches))
 
 
 def rook():
@@ -196,7 +102,7 @@ def rook():
                   [0, 0, top_z - notch_height + (notch_height + 1) / 2])
     notches = ring_of(notch, 6, top_radius - notch_depth / 2 + 0.5)
 
-    return finish(difference(rook, notches))
+    return drop_to_bed(difference(rook, notches))
 
 
 def knight():
@@ -205,7 +111,7 @@ def knight():
         ellipsoid([9, 4.5, 18], [0, 0, 18.5]),    # Body
         ellipsoid([5, 2.5, 7.5], [0, 0, 37.5]),   # Head
     ])
-    return finish(knight)
+    return drop_to_bed(knight)
 
 
 def bishop():
@@ -225,7 +131,7 @@ def bishop():
     slot.apply_transform(tt.rotation_matrix(np.radians(35), [0, 1, 0]))
     slot.apply_translation([2, 0, head_center + 3.5])
 
-    return finish(difference(bishop, [slot]))
+    return drop_to_bed(difference(bishop, [slot]))
 
 
 def queen():
@@ -244,7 +150,7 @@ def queen():
         cylinder(body_radius, BASE_HEIGHT, body_top),
         cone(5, crown_bottom, crown_height),
     ] + balls)
-    return finish(queen, scale=1.25)
+    return drop_to_bed(queen, scale=1.25)
 
 
 def king():
@@ -279,7 +185,7 @@ def king():
         upright,
         arms,
     ])
-    return finish(king, scale=1.25)
+    return drop_to_bed(king, scale=1.25)
 
 
 # Define the list of possible piece names and their corresponding functions
@@ -306,6 +212,11 @@ def main():
     parser.add_argument('--bishop', type=int, default=None, help='Number of bishops to include.')
     parser.add_argument('--queen', type=int, default=None, help='Number of queens to include.')
     parser.add_argument('--king', type=int, default=None, help='Number of kings to include.')
+    parser.add_argument('--sides', type=int, choices=(1, 2), default=1,
+                        help='1 for one side, 2 for both. With 2 and --format 3mf, white pieces print '
+                             'with filament 1 and black pieces with filament 2 (default: 1).')
+    parser.add_argument('--output', type=str, default=None, help='Output filename; .stl or .3mf (default: named after the pieces).')
+    add_format_argument(parser)
 
     args = parser.parse_args()
 
@@ -338,17 +249,27 @@ def main():
 
     # Build the list of pieces based on the selected counts.  Each piece type
     # is only built once and then copied.
-    assembled_pieces = []
+    sides = [('White', '#F2F2F2', 1), ('Black', '#202020', 2)][:args.sides]
     spacing_x = 40  # Horizontal spacing between pieces
     spacing_y = 40  # Vertical spacing between pieces
 
-    for piece_name, count in selected_pieces.items():
+    built = {}
+    for piece_name in selected_pieces:
         piece = piece_functions[piece_name]()
         if not piece.is_volume:
             print(f"Warning: {piece_name} is not a watertight solid.")
         print(f"  {piece_name.capitalize()} height: {piece.extents[2]:.1f}mm")
-        for _ in range(count):
-            assembled_pieces.append((piece_name.capitalize(), piece.copy()))
+        built[piece_name] = piece
+
+    assembled_pieces = []
+    for side, color, filament in sides:
+        for piece_name, count in selected_pieces.items():
+            for number in range(1, count + 1):
+                label = piece_name.replace('_', ' ')
+                name = f"{side} {label} {number}" if args.sides == 2 else f"{label.capitalize()} {number}"
+                assembled_pieces.append(Part(name, built[piece_name].copy(),
+                                             color if args.sides == 2 else None,
+                                             filament if args.sides == 2 else None))
 
     total_pieces = len(assembled_pieces)
     if total_pieces == 0:
@@ -361,31 +282,29 @@ def main():
 
     print(f"Arranging {total_pieces} pieces in a grid of {rows} rows and {columns} columns.")
 
-    # Arrange pieces in a grid
-    chess_set_meshes = []
-    for idx, (piece_name, piece) in enumerate(assembled_pieces):
+    # Arrange pieces in a grid.  The pieces don't touch, so even in an STL the
+    # slicer sees them as separate parts.
+    for idx, part in enumerate(assembled_pieces):
         row = idx // columns
         col = idx % columns
-        piece.apply_translation([col * spacing_x, row * spacing_y, 0])
-        chess_set_meshes.append(piece)
-
-    # Combine all pieces into one file.  The pieces don't touch, so the slicer
-    # sees them as separate parts.
-    chess_set = trimesh.util.concatenate(chess_set_meshes)
+        part.mesh.apply_translation([col * spacing_x, row * spacing_y, 0])
 
     # Determine output filename
-    unique_piece_types = set([name for name, _ in assembled_pieces])
-    if len(unique_piece_types) == 1:
+    if len(selected_pieces) == 1:
         # Only one type of piece is included
-        single_piece = unique_piece_types.pop().lower()
-        output_filename = f"chess_set_{single_piece}.stl"
+        stem = f"chess_set_{next(iter(selected_pieces))}"
     else:
         # Multiple types of pieces are included
-        output_filename = "chess_set.stl"
+        stem = "chess_set"
+    if args.sides == 2:
+        stem += "_both_sides"
+    output_filename = output_path(args.output, stem, args.format)
 
-    # Export the model to an STL file
-    chess_set.export(output_filename)
+    save(assembled_pieces, output_filename)
     print(f"Chess set exported to '{output_filename}'.")
+    if args.sides == 2 and not output_filename.lower().endswith('.3mf'):
+        print("Note: STL files can't hold colors; use --format 3mf to get the two sides "
+              "assigned to filaments 1 and 2.")
 
 
 if __name__ == "__main__":

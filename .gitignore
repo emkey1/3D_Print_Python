@@ -1,2 +1,5 @@
 *.stl
 !Chess_Set_01/chess_set.stl
+*.3mf
+__pycache__/
+result.json
