@@ -1,75 +1,78 @@
-# Generate STL file for drawer organizer.  Can have one or more compartments.
-# Compartments are diagonal to maximize length in the center compartment since
-# Many 3D printer beds are less than 11 inches (~ 256 mm) in size which limits
-# How large a single piece organizer can be.
+# Generate a drawer organizer.  Can have one or more compartments.
+#
+# Compartments are diagonal by default to maximize length in the center
+# compartment, since many 3D printer beds are less than 11 inches (~ 256 mm)
+# in size which limits how large a single piece organizer can be.  A straight
+# grid of compartments is also available.
+#
+# Give it your drawer's inside measurements with --drawer and it works out how
+# many organizers it takes to fill the drawer, sized so each one fits the bed.
 #
 # Optionally the organizer gets a stacking lip on the bottom: the lowest part of
 # the outer wall is stepped inward so it drops inside the walls of an identical
 # organizer underneath.  The step is a 45 degree chamfer rather than a flat ledge
 # so it prints without supports, and the floor stays on the build plate.
 #
-# Requires: numpy, trimesh, manifold3d (pip install -r requirements.txt)
+# Requires: numpy, trimesh, manifold3d (pip install -r requirements.txt, from the repository root)
 
-import numpy as np
-import trimesh
 import argparse
 import math
 import sys
+from pathlib import Path
 
-BOOLEAN_ENGINE = 'manifold'
+import numpy as np
+import trimesh
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from printlib import Part, add_format_argument, output_path, save  # noqa: E402
+from printlib import shapes  # noqa: E402
+from printlib.units import dimensions_type, format_mm  # noqa: E402
+
+DEFAULT_SIZE = 250.0
+DEFAULT_HEIGHT = 35.0
+BED_MARGIN = 3.0          # Keep this far from the edges of the bed
 
 
-def square_points(side, z):
-    h = side / 2
-    return [[-h, -h, z], [h, -h, z], [h, h, z], [-h, h, z]]
+def parse_grid(text):
+    """Parse 'COLUMNSxROWS', e.g. '3x2'."""
+    try:
+        columns, rows = (int(v) for v in text.lower().replace(' ', '').split('x'))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"--grid must be whole numbers like 3x2, not '{text}'") from None
+    if columns < 1 or rows < 1:
+        raise argparse.ArgumentTypeError("--grid needs at least 1 column and 1 row")
+    return columns, rows
 
 
-def stepped_block(bottom_side, top_side, z_bottom, z_step, z_top):
-    """Square solid centered on the Z axis.
+def stepped_block(bottom_width, bottom_depth, inset, z_bottom, z_step, z_top):
+    """Rectangular solid centered on the Z axis.
 
-    It is bottom_side wide from z_bottom up to z_step, flares out at 45 degrees
-    to top_side, then goes straight up to z_top.  With bottom_side == top_side
-    it is just a box.
+    It is bottom_width x bottom_depth from z_bottom up to z_step, flares out by
+    inset on every side at 45 degrees, then goes straight up to z_top.  With
+    inset == 0 it is just a box.
     """
-    if bottom_side >= top_side:
-        rings = [(top_side, z_bottom), (top_side, z_top)]
+    top_width, top_depth = bottom_width + 2 * inset, bottom_depth + 2 * inset
+    if inset <= 0:
+        rings = [(top_width, top_depth, z_bottom), (top_width, top_depth, z_top)]
     else:
-        rise = (top_side - bottom_side) / 2  # 45 degree chamfer
-        rings = [(bottom_side, z_bottom), (bottom_side, z_step),
-                 (top_side, z_step + rise), (top_side, z_top)]
-    return loft_squares(rings)
+        rings = [(bottom_width, bottom_depth, z_bottom), (bottom_width, bottom_depth, z_step),
+                 (top_width, top_depth, z_step + inset), (top_width, top_depth, z_top)]
+    return shapes.loft_rects(rings)
 
 
-def loft_squares(rings):
-    """Closed solid through a stack of (side, z) squares, bottom to top."""
-    vertices = []
-    for side, z in rings:
-        vertices += square_points(side, z)
-
-    top = 4 * (len(rings) - 1)
-    faces = [[0, 2, 1], [0, 3, 2],                              # bottom cap
-             [top, top + 1, top + 2], [top, top + 2, top + 3]]  # top cap
-    for r in range(len(rings) - 1):
-        lo, hi = 4 * r, 4 * (r + 1)
-        for k in range(4):
-            k1 = (k + 1) % 4
-            faces += [[lo + k, lo + k1, hi + k1], [lo + k, hi + k1, hi + k]]
-    return trimesh.Trimesh(vertices=vertices, faces=faces)
-
-
-def create_divider(start, direction, length, extension, thickness, z_top,
-                   floor_thickness, bite_width, bite_depth):
+def create_divider(start, direction, length, extend_start, extend_end, thickness,
+                   z_top, floor_thickness, bite_width, bite_depth):
     """Divider wall running from start along direction for length mm.
 
-    The wall is extended by extension mm past both ends so it buries itself in
-    the outer walls; anything sticking outside the organizer is trimmed later.
+    The wall is extended past its ends (into the outer walls or a crossing
+    divider); anything sticking outside the organizer is trimmed later.
     """
-    total_length = length + 2 * extension
     # Start halfway into the floor: a divider bottom flush with the underside of
     # the floor leaves coplanar faces that the boolean union handles badly.
     z_bottom = floor_thickness / 2
-    wall = trimesh.creation.box(extents=[total_length, thickness, z_top - z_bottom])
-    wall.apply_translation([length / 2, 0, (z_bottom + z_top) / 2])
+    total_length = length + extend_start + extend_end
+    wall = shapes.block([total_length, thickness, z_top - z_bottom],
+                        [(length + extend_end - extend_start) / 2, 0, (z_bottom + z_top) / 2])
 
     if bite_depth > 0 and bite_width > 0:
         # Elliptical scoop out of the top edge so it's easy to reach into the
@@ -80,99 +83,159 @@ def create_divider(start, direction, length, extension, thickness, z_top,
         bite.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0]))
         bite.apply_scale([bite_width / 2, 1, bite_depth])
         bite.apply_translation([length / 2, 0, z_top])
-        wall = trimesh.boolean.difference([wall, bite], engine=BOOLEAN_ENGINE)
+        wall = shapes.difference(wall, [bite])
 
     angle = math.atan2(direction[1], direction[0])
-    T = trimesh.transformations.concatenate_matrices(
-        trimesh.transformations.translation_matrix([start[0], start[1], 0]),
-        trimesh.transformations.rotation_matrix(angle, [0, 0, 1]),
-    )
-    wall.apply_transform(T)
+    wall.apply_transform(trimesh.transformations.rotation_matrix(angle, [0, 0, 1]))
+    wall.apply_translation([start[0], start[1], 0])
     return wall
 
 
-def clip_line_to_square(point, direction, half):
+def clip_line_to_rect(point, direction, half_width, half_depth):
     """Return the (start, end) of the line through point along direction inside
-    the square [-half, half]^2, or None if it misses.  direction must have
-    non-zero components."""
-    t_lo = max((-half - point[0]) / direction[0], (-half - point[1]) / direction[1])
-    t_hi = min((half - point[0]) / direction[0], (half - point[1]) / direction[1])
+    the rectangle [-half_width, half_width] x [-half_depth, half_depth], or None
+    if it misses.  direction must have non-zero components."""
+    t_lo = max((-half_width - point[0]) / direction[0], (-half_depth - point[1]) / direction[1])
+    t_hi = min((half_width - point[0]) / direction[0], (half_depth - point[1]) / direction[1])
     if t_hi - t_lo <= 1e-6:
         return None
     return point + t_lo * direction, point + t_hi * direction
 
 
-def create_organizer(size, height, wall_thickness, divider_thickness, floor_thickness,
-                     compartments, stack_lip, lip_height, lip_clearance,
+def diagonal_divider_segments(compartments, half_width, half_depth):
+    """Dividers parallel to the y = x diagonal, equally spaced across the
+    inside of the organizer.  Yields (start, direction, length) with both ends
+    on the outer walls."""
+    direction = np.array([1.0, 1.0]) / math.sqrt(2)
+    normal = np.array([-1.0, 1.0]) / math.sqrt(2)
+    total_width = (2 * half_width + 2 * half_depth) / math.sqrt(2)
+    compartment_width = total_width / compartments
+
+    for i in range(1, compartments):
+        d = (i - compartments / 2) * compartment_width
+        segment = clip_line_to_rect(normal * d, direction, half_width, half_depth)
+        if segment is None:
+            print(f"Warning: Divider {i} doesn't cross the organizer. Skipping.")
+            continue
+        start, end = segment
+        length = float(np.linalg.norm(end - start))
+        if length < 1.0:
+            print(f"Warning: Divider {i} is only {length:.2f}mm long. Skipping.")
+            continue
+        yield start, direction, length, True, True
+
+
+def grid_divider_segments(columns, rows, half_width, half_depth):
+    """Straight dividers for a columns x rows grid.  Each divider is split into
+    one segment per compartment so every compartment gets its own scoop.
+    Yields (start, direction, length, starts_at_wall, ends_at_wall)."""
+    xs = np.linspace(-half_width, half_width, columns + 1)
+    ys = np.linspace(-half_depth, half_depth, rows + 1)
+    for x in xs[1:-1]:                          # Dividers running front to back
+        for j in range(rows):
+            yield (np.array([x, ys[j]]), np.array([0.0, 1.0]), ys[j + 1] - ys[j],
+                   j == 0, j == rows - 1)
+    for y in ys[1:-1]:                          # Dividers running left to right
+        for i in range(columns):
+            yield (np.array([xs[i], y]), np.array([1.0, 0.0]), xs[i + 1] - xs[i],
+                   i == 0, i == columns - 1)
+
+
+def create_organizer(width, depth, height, wall_thickness, divider_thickness, floor_thickness,
+                     compartments, grid, stack_lip, lip_height, lip_clearance,
                      bite_width_ratio, bite_depth_ratio):
     total_height = floor_thickness + height
     t = wall_thickness
 
-    # Outer body: the solid envelope of the organizer.  `size` is the true outside
-    # footprint, so walls are inside it rather than centered on its edge.
+    # Outer body: the solid envelope of the organizer.  width x depth is the true
+    # outside footprint, so walls are inside it rather than centered on its edge.
     if stack_lip:
         inset = t + lip_clearance                  # lip slips inside the walls below
         chamfer_shift = t * (math.sqrt(2) - 1)     # keeps the chamfered wall t thick
-        outer = stepped_block(size - 2 * inset, size, 0, lip_height, total_height)
-        cavity = stepped_block(size - 2 * inset - 2 * t, size - 2 * t, floor_thickness,
-                               lip_height + chamfer_shift, total_height + 1)
+        outer = stepped_block(width - 2 * inset, depth - 2 * inset, inset,
+                              0, lip_height, total_height)
+        cavity = stepped_block(width - 2 * inset - 2 * t, depth - 2 * inset - 2 * t, inset,
+                               floor_thickness, lip_height + chamfer_shift, total_height + 1)
         # The organizer above rests on its chamfer, lip_height + lip_clearance up
         # from its bottom, so it hangs that far down into this one.  Dividers have
         # to stop short of that or the organizer above sits on them instead.
         divider_top = total_height - lip_height - 2 * lip_clearance
     else:
-        outer = stepped_block(size, size, 0, 0, total_height)
-        cavity = stepped_block(size - 2 * t, size - 2 * t, floor_thickness, 0, total_height + 1)
+        outer = stepped_block(width, depth, 0, 0, 0, total_height)
+        cavity = stepped_block(width - 2 * t, depth - 2 * t, 0, floor_thickness, 0, total_height + 1)
         divider_top = total_height
 
-    shell = trimesh.boolean.difference([outer, cavity], engine=BOOLEAN_ENGINE)
-    components = [shell]
+    components = [shapes.difference(outer, [cavity])]
 
-    # Create dividers, parallel to the y = x diagonal and equally spaced across
-    # the inside of the organizer.
-    if compartments > 1:
-        inner_half = size / 2 - t
-        direction = np.array([1.0, 1.0]) / math.sqrt(2)
-        normal = np.array([-1.0, 1.0]) / math.sqrt(2)
-        total_width = 2 * inner_half * math.sqrt(2)
-        compartment_width = total_width / compartments
+    half_width, half_depth = width / 2 - t, depth / 2 - t
+    if grid:
+        segments = grid_divider_segments(grid[0], grid[1], half_width, half_depth)
+    elif compartments > 1:
+        segments = diagonal_divider_segments(compartments, half_width, half_depth)
+    else:
+        segments = []
 
-        for i in range(1, compartments):
-            d = (i - compartments / 2) * compartment_width
-            segment = clip_line_to_square(normal * d, direction, inner_half)
-            if segment is None:
-                print(f"Warning: Divider {i} doesn't cross the organizer. Skipping.")
-                continue
-            start, end = segment
-            length = float(np.linalg.norm(end - start))
-            if length < 1.0:
-                print(f"Warning: Divider {i} is only {length:.2f}mm long. Skipping.")
-                continue
+    into_wall = 2 * t + divider_thickness       # Plenty to reach through the wall
+    into_divider = divider_thickness / 2 + 0.1  # Just past the middle of a crossing
+    for start, direction, length, starts_at_wall, ends_at_wall in segments:
+        components.append(create_divider(
+            start=start,
+            direction=direction,
+            length=length,
+            extend_start=into_wall if starts_at_wall else into_divider,
+            extend_end=into_wall if ends_at_wall else into_divider,
+            thickness=divider_thickness,
+            z_top=divider_top,
+            floor_thickness=floor_thickness,
+            bite_width=length * bite_width_ratio,
+            bite_depth=(divider_top - floor_thickness) * bite_depth_ratio,
+        ))
 
-            components.append(create_divider(
-                start=start,
-                direction=direction,
-                length=length,
-                extension=2 * t + divider_thickness,
-                thickness=divider_thickness,
-                z_top=divider_top,
-                floor_thickness=floor_thickness,
-                bite_width=length * bite_width_ratio,
-                bite_depth=(divider_top - floor_thickness) * bite_depth_ratio,
-            ))
-
-    organizer = trimesh.boolean.union(components, engine=BOOLEAN_ENGINE)
+    organizer = shapes.union(components)
     # Trim divider ends that poke out past the outer walls.
-    organizer = trimesh.boolean.intersection([organizer, outer], engine=BOOLEAN_ENGINE)
-    return organizer
+    return shapes.intersection([organizer, outer])
+
+
+def fit_drawer(drawer_width, drawer_depth, bed_width, bed_depth, slack):
+    """Split the drawer floor into the fewest equal organizers that fit the bed.
+    Returns (columns, rows, organizer_width, organizer_depth)."""
+    usable_width, usable_depth = drawer_width - slack, drawer_depth - slack
+    max_width, max_depth = bed_width - 2 * BED_MARGIN, bed_depth - 2 * BED_MARGIN
+
+    best = None
+    # On a rectangular bed the organizers may fit better turned sideways.
+    for fit_width, fit_depth in ((max_width, max_depth), (max_depth, max_width)):
+        columns = math.ceil(usable_width / fit_width)
+        rows = math.ceil(usable_depth / fit_depth)
+        if best is None or columns * rows < best[0] * best[1]:
+            best = (columns, rows, usable_width / columns, usable_depth / rows)
+    return best
+
+
+def stacked_height(drawer_height, headroom, levels, lip_height, lip_clearance):
+    """Overall height of each organizer so `levels` stacked ones fill the drawer.
+    Each organizer above the first adds its height less the lip that drops into
+    the one below."""
+    available = drawer_height - headroom
+    return (available + (levels - 1) * (lip_height + lip_clearance)) / levels
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Generate a square kitchen drawer organizer with parallel diagonal compartments and an open top.')
+    parser = argparse.ArgumentParser(description='Generate a drawer organizer with diagonal or grid compartments and an open top.')
 
-    parser.add_argument('--compartments', type=int, default=3, help='Number of compartments to include (default: 3).')
-    parser.add_argument('--size', type=float, default=250.0, help='Outside size of the organizer (width and depth) in millimeters (default: 250 mm).')
-    parser.add_argument('--height', type=float, default=35.0, help='Height of the organizer side walls above the floor in millimeters (default: 35 mm).')
+    parser.add_argument('--compartments', type=int, default=3, help='Number of diagonal compartments to include (default: 3).')
+    parser.add_argument('--grid', type=parse_grid, default=None, metavar='COLUMNSxROWS',
+                        help='Use a straight grid of compartments instead of diagonal ones, e.g. 3x2.')
+    parser.add_argument('--size', type=dimensions_type((1, 2), '--size'), default=None, metavar='SIZE|WxD',
+                        help=f'Outside size: one number for square, or WIDTHxDEPTH, in millimeters or with a unit like 10x8in (default: {DEFAULT_SIZE:g} mm).')
+    parser.add_argument('--height', type=float, default=None, help=f'Height of the organizer side walls above the floor in millimeters (default: {DEFAULT_HEIGHT:g} mm).')
+    parser.add_argument('--drawer', type=dimensions_type((2, 3), '--drawer'), default=None, metavar='WxD[xH]',
+                        help="Inside size of your drawer, e.g. 400x300 or 400x300x60 in millimeters, or in inches: 20-1/2x15x3in (a unit on the end applies to every number; fractions like 15-3/4 are fine). Works out how many organizers fill it and how big each one is. With a height, the organizers are made tall enough to fill it (see --levels).")
+    parser.add_argument('--bed', type=dimensions_type((1, 2), '--bed'), default=(256.0,), metavar='SIZE|WxD',
+                        help='Printer bed size, used with --drawer (default: 256, the Bambu Lab X1/P1/X2D bed).')
+    parser.add_argument('--drawer_clearance', type=float, default=1.0, help='Total gap left across the drawer in each direction so the organizers drop in easily, in millimeters (default: 1 mm).')
+    parser.add_argument('--drawer_headroom', type=float, default=2.0, help='Gap left above the organizers when --drawer includes a height, in millimeters (default: 2 mm).')
+    parser.add_argument('--levels', type=int, default=1, help='Number of organizers stacked on top of each other in the drawer, used when --drawer includes a height (default: 1).')
     parser.add_argument('--divider_thickness', type=float, default=1.75, help='Thickness of the dividers in millimeters (default: 1.75 mm).')
     parser.add_argument('--wall_thickness', type=float, default=1.75, help='Thickness of the side walls in millimeters (default: 1.75 mm).')
     parser.add_argument('--floor_thickness', type=float, default=1.25, help='Thickness of the floor in millimeters (default: 1.25 mm).')
@@ -183,61 +246,93 @@ def main():
     parser.add_argument('--bite_depth', type=float, default=0.33, help='Depth of the scoop in the top of each divider, as a fraction of its height (default: 0.33, 0 to disable).')
     parser.add_argument('--scale', type=float, default=1.0, help='Scale the whole organizer for a test print, e.g. 0.25 for quarter size. Thicknesses scale too but never below --min_thickness, and the lip clearance is not scaled so the stacking fit is real (default: 1).')
     parser.add_argument('--min_thickness', type=float, default=0.8, help='Thinnest wall, divider or floor --scale will produce, in millimeters (default: 0.8 mm, two lines with a 0.4 mm nozzle).')
-    parser.add_argument('--output', type=str, default='drawer_organizer.stl', help='Output STL filename (default: drawer_organizer.stl).')
+    parser.add_argument('--output', type=str, default=None, help='Output filename; .stl or .3mf (default: named after the settings).')
+    add_format_argument(parser)
 
     args = parser.parse_args()
 
-    if args.scale <= 0:
-        print("Error: --scale must be positive.")
+    def fail(message):
+        print(f"Error: {message}")
         sys.exit(1)
+
+    if args.compartments < 1:
+        fail("Number of compartments must be at least 1.")
+    grid = args.grid
+    if min(args.wall_thickness, args.divider_thickness, args.floor_thickness) <= 0:
+        fail("Thicknesses must all be positive.")
+    if not 0 <= args.bite_depth < 1 or not 0 <= args.bite_width < 1:
+        fail("--bite_width and --bite_depth must be between 0 and 1.")
+    if args.scale <= 0:
+        fail("--scale must be positive.")
+    if args.levels < 1:
+        fail("--levels must be at least 1.")
+
+    # --- Work out the organizer's outside dimensions ---
+    tiles = None
+    if args.drawer:
+        if args.size:
+            fail("Use either --drawer or --size, not both.")
+        bed = args.bed * 2 if len(args.bed) == 1 else args.bed
+        print("Drawer inside: " + " x ".join(format_mm(v) for v in args.drawer) + " mm")
+        columns, rows, width, depth = fit_drawer(args.drawer[0], args.drawer[1], bed[0], bed[1],
+                                                 args.drawer_clearance)
+        tiles = (columns, rows)
+        if len(args.drawer) == 3:
+            if args.height is not None:
+                fail("--drawer includes a height, so leave out --height.")
+            if args.levels > 1 and not args.stack_lip:
+                fail("Stacking more than one level needs the stack lip.")
+            overall = stacked_height(args.drawer[2], args.drawer_headroom, args.levels,
+                                     args.lip_height if args.stack_lip else 0,
+                                     args.lip_clearance if args.stack_lip else 0)
+            args.height = overall - args.floor_thickness
+        elif args.levels > 1:
+            fail("--levels needs a drawer height, e.g. --drawer 400x300x60.")
+    else:
+        size = args.size or (DEFAULT_SIZE,)
+        width, depth = (size[0], size[0]) if len(size) == 1 else size
+    if args.height is None:
+        args.height = DEFAULT_HEIGHT
+    if args.height <= 0:
+        fail("The organizer has no height left; check --drawer, --levels and --floor_thickness.")
+
     if args.scale != 1:
-        args.size *= args.scale
+        width *= args.scale
+        depth *= args.scale
         args.height *= args.scale
         for name in ('wall_thickness', 'divider_thickness', 'floor_thickness'):
             value = getattr(args, name)
             setattr(args, name, max(value * args.scale, min(value, args.min_thickness)))
         args.lip_height = max(args.lip_height * args.scale, args.floor_thickness + 0.5)
-        print(f"Scaling by {args.scale:g}: size {args.size:g}mm, height {args.height:g}mm, "
+        print(f"Scaling by {args.scale:g}: size {width:g} x {depth:g}mm, height {args.height:g}mm, "
               f"walls {args.wall_thickness:g}mm, dividers {args.divider_thickness:g}mm, "
               f"floor {args.floor_thickness:g}mm, lip {args.lip_height:g}mm; "
               f"lip clearance stays {args.lip_clearance:g}mm.")
 
-    if args.compartments < 1:
-        print("Error: Number of compartments must be at least 1.")
-        sys.exit(1)
-    if min(args.size, args.height, args.wall_thickness, args.divider_thickness, args.floor_thickness) <= 0:
-        print("Error: Size, height and thicknesses must all be positive.")
-        sys.exit(1)
-    if args.size <= 4 * args.wall_thickness:
-        print("Error: Size is too small for the wall thickness.")
-        sys.exit(1)
-    if not 0 <= args.bite_depth < 1 or not 0 <= args.bite_width < 1:
-        print("Error: --bite_width and --bite_depth must be between 0 and 1.")
-        sys.exit(1)
+    if min(width, depth) <= 4 * args.wall_thickness:
+        fail("Size is too small for the wall thickness.")
     if args.stack_lip:
         if args.lip_height <= args.floor_thickness:
-            print("Error: --lip_height must be greater than --floor_thickness.")
-            sys.exit(1)
+            fail("--lip_height must be greater than --floor_thickness.")
         # The lip of the organizer above must not reach down to this one's chamfer.
         chamfer_top = args.lip_height + args.wall_thickness * math.sqrt(2) + args.lip_clearance
         if args.floor_thickness + args.height - args.lip_height - args.lip_clearance <= chamfer_top:
             if args.scale != 1:
-                print(f"Error: At --scale {args.scale:g} the organizer is too short for the stacking lip. Use a larger --scale or --no-stack_lip.")
-            else:
-                print("Error: Organizer is too short for the stacking lip. Increase --height or reduce --lip_height.")
-            sys.exit(1)
+                fail(f"At --scale {args.scale:g} the organizer is too short for the stacking lip. Use a larger --scale or --no-stack_lip.")
+            fail("Organizer is too short for the stacking lip. Increase the height or reduce --lip_height.")
 
-    print(f"Creating organizer: size={args.size}mm x {args.size}mm, height={args.height}mm")
-    print(f"Wall thickness: {args.wall_thickness}mm, Divider thickness: {args.divider_thickness}mm, Floor thickness: {args.floor_thickness}mm")
-    print(f"Compartments: {args.compartments}")
+    layout = f"{grid[0]}x{grid[1]} grid" if grid else f"{args.compartments} diagonal compartment(s)"
+    print(f"Creating organizer: {format_mm(width)}mm x {format_mm(depth)}mm, height={format_mm(args.height)}mm, {layout}")
 
     organizer = create_organizer(
-        size=args.size,
+        width=width,
+        depth=depth,
         height=args.height,
         wall_thickness=args.wall_thickness,
         divider_thickness=args.divider_thickness,
         floor_thickness=args.floor_thickness,
         compartments=args.compartments,
+        grid=grid,
         stack_lip=args.stack_lip,
         lip_height=args.lip_height,
         lip_clearance=args.lip_clearance,
@@ -249,29 +344,28 @@ def main():
         print("Warning: Generated mesh is not watertight; the slicer may need to repair it.")
 
     # Determine output filename
-    if args.output == 'drawer_organizer.stl':
-        output_filename = f"drawer_organizer_{args.compartments}_compartments.stl"
-        if args.scale != 1:
-            output_filename = output_filename.replace('.stl', f'_scale_{args.scale:g}.stl')
-    else:
-        output_filename = args.output
+    stem = f"drawer_organizer_{grid[0]}x{grid[1]}_grid" if grid else f"drawer_organizer_{args.compartments}_compartments"
+    if tiles or args.size:
+        stem += f"_{width:.0f}x{depth:.0f}"
+    if args.scale != 1:
+        stem += f"_scale_{args.scale:g}"
+    output_filename = output_path(args.output, stem, args.format)
 
-    # Export the model to an STL file
-    organizer.export(output_filename)
+    save(Part(stem.replace('_', ' ').capitalize(), organizer), output_filename)
     print(f"Organizer exported to '{output_filename}'.")
 
     extents = organizer.extents
 
     # Print out the arguments used
     print("\nOrganizer Parameters Used:")
-    print(f"  Compartments: {args.compartments}")
-    print(f"  Size: {args.size}mm x {args.size}mm")
-    print(f"  Height: {args.height}mm (overall {extents[2]:.2f}mm including floor)")
-    print(f"  Divider Thickness: {args.divider_thickness}mm")
-    print(f"  Wall Thickness: {args.wall_thickness}mm")
-    print(f"  Floor Thickness: {args.floor_thickness}mm")
+    print(f"  Compartments: {layout}")
+    print(f"  Size: {format_mm(width)}mm x {format_mm(depth)}mm")
+    print(f"  Height: {format_mm(args.height)}mm (overall {extents[2]:.2f}mm including floor)")
+    print(f"  Divider Thickness: {args.divider_thickness:g}mm")
+    print(f"  Wall Thickness: {args.wall_thickness:g}mm")
+    print(f"  Floor Thickness: {args.floor_thickness:g}mm")
     if args.stack_lip:
-        print(f"  Stacking Lip: {args.lip_height}mm high, {args.lip_clearance}mm clearance")
+        print(f"  Stacking Lip: {args.lip_height:g}mm high, {args.lip_clearance:g}mm clearance")
         print(f"  Stacked organizers add {args.floor_thickness + args.height - args.lip_height - args.lip_clearance:.2f}mm each")
     else:
         print("  Stacking Lip: none")
@@ -279,6 +373,16 @@ def main():
         print(f"  Scale: {args.scale:g} (lip clearance not scaled)")
     print(f"  Output File: {output_filename}")
     print(f"  Bounding box: {extents[0]:.2f} x {extents[1]:.2f} x {extents[2]:.2f} mm")
+
+    if tiles:
+        columns, rows = tiles
+        count = columns * rows * args.levels
+        print(f"\nTo fill the {format_mm(args.drawer[0])} x {format_mm(args.drawer[1])}mm drawer: print {count} of these "
+              f"({columns} across x {rows} deep" + (f", {args.levels} levels high" if args.levels > 1 else "") + ").")
+        if len(args.drawer) == 3:
+            stack = extents[2] + (args.levels - 1) * (extents[2] - args.lip_height - args.lip_clearance)
+            print(f"  Stack height {stack:.1f}mm in a {format_mm(args.drawer[2])}mm deep drawer.")
+
 
 if __name__ == "__main__":
     main()
