@@ -16,15 +16,30 @@ default; add `--format 3mf` (or give an `--output` name ending in `.3mf`) to get
 file instead.  3MF keeps parts as separate, named objects, and Bambu Studio and
 OrcaSlicer pick up which filament each part prints with.
 
+Bambu Studio 2.8.2 shows "The 3mf file has invalid config, load geometry data only" when
+it opens these files.  That is a bug in that version (it says so for any 3MF without
+Bambu printer settings inside); the fix is in the 2.8.3 and 2.8.4 public betas.  The
+model and its filament assignments still load correctly, so click OK.
+
 ## Projects
 
 - **Drawer_Organizer** - organizer trays with diagonal or grid compartments and an
   optional stacking lip.
   - `python3 Drawer_Organizer/drawer_Organizer.py --compartments 4`
   - `python3 Drawer_Organizer/drawer_Organizer.py --grid 3x2 --size 240x160`
-  - Fill a drawer: `--drawer 520x380` works out how many organizers it takes and how
-    big each one is to fit the bed (`--bed`, default 256 mm).  Add a height,
-    `--drawer 520x380x70 --levels 2`, to size them to stack two high.
+  - Fill a drawer: `--drawer 520x380x70 --format 3mf` makes a set that fills it: one
+    main organizer as big as the bed allows (`--bed`, default 256 mm) with the
+    compartments you asked for, plus single-compartment bins in the space beside and
+    behind it.  A narrow strip gets one bin as long as the bed can print: laid corner
+    to corner, a narrow bin can be longer than the bed is wide, and it is already
+    turned that way in the file.  Where that long bin leaves a small corner free, the
+    bin next to it is made L-shaped to fill it.  The whole set goes in one file; use
+    Arrange All in the slicer to
+    spread the pieces over plates (pieces that nearly fill the bed may need dragging
+    onto a plate by hand).  With STL you get one file per distinct piece.
+  - The drawer height is a ceiling: walls go as tall as it allows, less
+    `--drawer_headroom` (2 mm), and never taller.  Add `--height` for lower walls,
+    `--levels 2` to stack two sets, or `--bin_size 120` for more, smaller bins.
   - Sizes can be in inches: `--drawer 20-1/2x15x3in` (a unit on the end applies to every
     number; `cm` works too).
   - Test print: `--scale 0.25`.
