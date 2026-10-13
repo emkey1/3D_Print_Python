@@ -46,9 +46,21 @@ model and its filament assignments still load correctly, so click OK.
 - **Chess_Set_01** - a chess set.  `--sides 2 --format 3mf` gives both sides, with white
   on filament 1 and black on filament 2.
 - **4_Sided_Pyramid** - a stepped pyramid.
+- **Queen_Anne** - a simplified, multi-color waterline model of Cunard's cruise ship
+  MS Queen Anne, laid out from Cunard's published deck plans and photographs.
+  - `python3 Queen_Anne/queen_anne.py` writes `queen_anne.3mf`: one object made of parts
+    already assigned to six filaments (1 white, 2 black, 3 red, 4 orange for the
+    lifeboats, 5 light brown for the decks, 6 blue for the pools).
+  - It is as long as fits the bed straight (250 mm on a 256 mm bed, about 1:1290).
+    `--diagonal` makes it as long as fits corner to corner (about 318 mm), and
+    `--length` sets the length yourself.
+  - `--no-lifeboats`, `--no-decks` and `--no-pools` each save a filament.
+    `--no-lettering` leaves CUNARD off the hull; on a small model the letters are
+    printed larger than true scale so their strokes are printable.
 
 ## printlib
 
-Shared code used by the scripts: shape building blocks and booleans (`printlib/shapes.py`)
-and STL/3MF saving (`printlib/export.py`).  Scripts import it straight from the
+Shared code used by the scripts: shape building blocks and booleans (`printlib/shapes.py`),
+STL/3MF saving (`printlib/export.py`), sizes with units (`printlib/units.py`) and
+fitting pieces on the bed (`printlib/bed.py`).  Scripts import it straight from the
 repository, so there's nothing to install.
