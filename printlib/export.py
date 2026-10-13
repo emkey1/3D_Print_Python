@@ -42,9 +42,14 @@ def output_path(output, default_stem, file_format):
     return f'{default_stem}.{file_format}'
 
 
-def save(parts, path):
+def save(parts, path, assembly=None):
     """Save a Part, a mesh, or a list of either.  The format comes from the
-    file extension."""
+    file extension.
+
+    With assembly set to a name, a 3MF holds one object of that name made of the
+    parts, so the slicer keeps them together when it arranges the plate and each
+    part still prints with its own filament.  Use it for a multi-color model
+    whose parts are already in position."""
     if not isinstance(parts, (list, tuple)):
         parts = [parts]
     parts = [p if isinstance(p, Part) else Part(f'Part {i + 1}', p) for i, p in enumerate(parts)]
@@ -53,7 +58,7 @@ def save(parts, path):
     if extension == '.stl':
         trimesh.util.concatenate([p.mesh for p in parts]).export(path)
     elif extension == '.3mf':
-        write_3mf(parts, path)
+        write_3mf(parts, path, assembly)
     else:
         raise ValueError(f"Don't know how to save '{path}'; use a .stl or .3mf extension.")
 
@@ -81,7 +86,7 @@ def _mesh_xml(mesh):
     return f'<mesh>\n<vertices>\n{vertices}\n</vertices>\n<triangles>\n{triangles}\n</triangles>\n</mesh>'
 
 
-def write_3mf(parts, path):
+def write_3mf(parts, path, assembly=None):
     colors = []
     for p in parts:
         if p.color and p.color not in colors:
@@ -92,15 +97,23 @@ def write_3mf(parts, path):
         bases = ''.join(f'<base name={quoteattr(c)} displaycolor="{c.upper()}FF"/>' for c in colors)
         resources.append(f'<basematerials id="1">{bases}</basematerials>')
 
-    items = []
-    settings = []
-    for index, part in enumerate(parts):
-        object_id = index + 2   # id 1 is the material list
+    ids = [index + 2 for index in range(len(parts))]    # id 1 is the material list
+    for object_id, part in zip(ids, parts):
         material = (f' pid="1" pindex="{colors.index(part.color)}"' if part.color else '')
         resources.append(f'<object id="{object_id}" type="model" name={quoteattr(part.name)}{material}>\n'
                          f'{_mesh_xml(part.mesh)}\n</object>')
-        items.append(f'<item objectid="{object_id}"/>')
-        settings.append(_object_settings(object_id, part))
+
+    if assembly:
+        # One object whose components are the part meshes.
+        assembly_id = ids[-1] + 1
+        components = ''.join(f'<component objectid="{object_id}"/>' for object_id in ids)
+        resources.append(f'<object id="{assembly_id}" type="model" name={quoteattr(assembly)}>'
+                         f'<components>{components}</components></object>')
+        items = [f'<item objectid="{assembly_id}"/>']
+        settings = [_assembly_settings(assembly_id, assembly, ids, parts)]
+    else:
+        items = [f'<item objectid="{object_id}"/>' for object_id in ids]
+        settings = [_object_settings(object_id, part) for object_id, part in zip(ids, parts)]
 
     model = ('<?xml version="1.0" encoding="UTF-8"?>\n'
              '<model unit="millimeter" xml:lang="en-US" '
@@ -123,5 +136,21 @@ def _object_settings(object_id, part):
              f'  <metadata key="name" value={quoteattr(part.name)}/>']
     if part.filament:
         lines.append(f'  <metadata key="extruder" value="{part.filament}"/>')
+    lines.append('</object>')
+    return '\n'.join(lines)
+
+
+def _assembly_settings(assembly_id, name, ids, parts):
+    """Settings for one object made of parts, each with its own filament."""
+    lines = [f'<object id="{assembly_id}">',
+             f'  <metadata key="name" value={quoteattr(name)}/>',
+             f'  <metadata key="extruder" value="{parts[0].filament or 1}"/>']
+    for object_id, part in zip(ids, parts):
+        lines += [f'  <part id="{object_id}" subtype="normal_part">',
+                  f'    <metadata key="name" value={quoteattr(part.name)}/>',
+                  '    <metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/>']
+        if part.filament:
+            lines.append(f'    <metadata key="extruder" value="{part.filament}"/>')
+        lines.append('  </part>')
     lines.append('</object>')
     return '\n'.join(lines)

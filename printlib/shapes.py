@@ -42,6 +42,13 @@ def _loft(outlines):
     return trimesh.Trimesh(vertices=vertices, faces=faces)
 
 
+def loft_outlines(rings):
+    """Closed solid through a stack of (points, z) outlines, bottom to top.
+    points are (x, y) pairs going counterclockwise seen from above; every
+    outline needs the same number of points and must be convex."""
+    return _loft([[[x, y, z] for x, y in points] for points, z in rings])
+
+
 def loft_rects(rings):
     """Closed solid through a stack of (width, depth, z) rectangles, bottom to top.
 
